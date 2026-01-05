@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eva Sanchez WebGL Text Hover Effect</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: #0a0a0a;
+            color: #fff;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        .container {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .text-wrapper {
+            position: relative;
+            cursor: pointer;
+        }
+
+        .text-hidden {
+            opacity: 0;
+            pointer-events: none;
+            position: absolute;
+            font-size: 120px;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        .info {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="text-wrapper">
+            <div class="text-hidden">EVA SÁNCHEZ</div>
+            <canvas id="canvas"></canvas>
+        </div>
+        <div class="info">Hover over the text</div>
+    </div>
+
+    <script>
+        // WebGL Text Hover Effect
+        class WebGLTextEffect {
+            constructor(canvas, text) {
+                this.canvas = canvas;
+                this.gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                this.text = text;
+                this.mouse = { x: 0.5, y: 0.5 };
+                this.targetMouse = { x: 0.5, y: 0.5 };
+                this.rippleTime = 0;
+                this.hovering = false;
+                
+                if (!this.gl) {
+                    console.error('WebGL not supported');
+                    return;
+                }
+                
+                this.init();
+            }
+
+            init() {
+                this.setupCanvas();
+                this.createTexture();
+                this.createShaders();
+                this.setupGeometry();
+                this.addEventListeners();
+                this.animate();
+            }
+
+            setupCanvas() {
+                const dpr = window.devicePixelRatio || 1;
+                this.canvas.width = 1200 * dpr;
+                this.canvas.height = 300 * dpr;
+                this.canvas.style.width = '1200px';
+                this.canvas.style.height = '300px';
+                this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+            }
+
+            createTexture() {
+                // Create text texture
+                const textCanvas = document.createElement('canvas');
+                const ctx = textCanvas.getContext('2d');
+                const dpr = window.devicePixelRatio || 1;
+                
+                textCanvas.width = 1200 * dpr;
+                textCanvas.height = 300 * dpr;
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = `800 ${120 * dpr}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.text, textCanvas.width / 2, textCanvas.height / 2);
+                
+                // Create WebGL texture
+                this.texture = this.gl.createTexture();
+                this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+                this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, textCanvas);
+                this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
+                this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
+                this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.LINEAR);
+                this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.LINEAR);
+            }
+
+            createShaders() {
+                // Vertex Shader
+                const vertexShaderSource = `
+                    attribute vec2 position;
+                    attribute vec2 uv;
+                    varying vec2 vUv;
+                    
+                    void main() {
+                        vUv = uv;
+                        gl_Position = vec4(position, 0.0, 1.0);
+                    }
+                `;
+
+                // Fragment Shader with ripple effect
+                const fragmentShaderSource = `
+                    precision highp float;
+                    
+                    uniform sampler2D uTexture;
+                    uniform vec2 uMouse;
+                    uniform float uTime;
+                    uniform float uHover;
+                    
+                    varying vec2 vUv;
+                    
+                    float ripple(float dist, float time, float power) {
+                        float distance = length(dist + time);
+                        return tan(distance * power) * -0.01;
+                    }
+                    
+                    void main() {
+                        vec2 uv = vUv;
+                        
+                        // Calculate distance from mouse
+                        float dist = distance(vUv, uMouse);
+                        
+                        // Ripple effect
+                        float mousePos = uMouse.x * -2.0;
+                        float mousePower = abs(uMouse.x * 2.0);
+                        
+                        float rippleEffect = ripple(vUv.y, mousePos, 20.0) * 
+                                           (0.2 * (1.0 - mousePower)) * 
+                                           (1.0 - mousePower) * uHover;
+                        
+                        uv.x += rippleEffect;
+                        
+                        // Sample texture with distorted UV
+                        vec4 color = texture2D(uTexture, uv);
+                        
+                        // Reduce alpha at distortion edges
+                        color.a -= abs(rippleEffect * 8.0);
+                        
+                        gl_FragColor = color;
+                    }
+                `;
+
+                // Compile shaders
+                const vertexShader = this.compileShader(vertexShaderSource, this.gl.VERTEX_SHADER);
+                const fragmentShader = this.compileShader(fragmentShaderSource, this.gl.FRAGMENT_SHADER);
+
+                // Create program
+                this.program = this.gl.createProgram();
+                this.gl.attachShader(this.program, vertexShader);
+                this.gl.attachShader(this.program, fragmentShader);
+                this.gl.linkProgram(this.program);
+
+                if (!this.gl.getProgramParameter(this.program, this.gl.LINK_STATUS)) {
+                    console.error('Program link error:', this.gl.getProgramInfoLog(this.program));
+                }
+
+                this.gl.useProgram(this.program);
+
+                // Get uniform locations
+                this.uniforms = {
+                    uTexture: this.gl.getUniformLocation(this.program, 'uTexture'),
+                    uMouse: this.gl.getUniformLocation(this.program, 'uMouse'),
+                    uTime: this.gl.getUniformLocation(this.program, 'uTime'),
+                    uHover: this.gl.getUniformLocation(this.program, 'uHover')
+                };
+            }
+
+            compileShader(source, type) {
+                const shader = this.gl.createShader(type);
+                this.gl.shaderSource(shader, source);
+                this.gl.compileShader(shader);
+
+                if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+                    console.error('Shader compile error:', this.gl.getShaderInfoLog(shader));
+                    this.gl.deleteShader(shader);
+                    return null;
+                }
+
+                return shader;
+            }
+
+            setupGeometry() {
+                const positions = new Float32Array([
+                    -1, -1,
+                     1, -1,
+                    -1,  1,
+                     1,  1
+                ]);
+
+                const uvs = new Float32Array([
+                    0, 1,
+                    1, 1,
+                    0, 0,
+                    1, 0
+                ]);
+
+                // Position buffer
+                const positionBuffer = this.gl.createBuffer();
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, positionBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, positions, this.gl.STATIC_DRAW);
+
+                const positionLocation = this.gl.getAttribLocation(this.program, 'position');
+                this.gl.enableVertexAttribArray(positionLocation);
+                this.gl.vertexAttribPointer(positionLocation, 2, this.gl.FLOAT, false, 0, 0);
+
+                // UV buffer
+                const uvBuffer = this.gl.createBuffer();
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, uvBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, uvs, this.gl.STATIC_DRAW);
+
+                const uvLocation = this.gl.getAttribLocation(this.program, 'uv');
+                this.gl.enableVertexAttribArray(uvLocation);
+                this.gl.vertexAttribPointer(uvLocation, 2, this.gl.FLOAT, false, 0, 0);
+            }
+
+            addEventListeners() {
+                this.canvas.addEventListener('mousemove', (e) => {
+                    const rect = this.canvas.getBoundingClientRect();
+                    this.targetMouse.x = (e.clientX - rect.left) / rect.width;
+                    this.targetMouse.y = 1 - (e.clientY - rect.top) / rect.height;
+                });
+
+                this.canvas.addEventListener('mouseenter', () => {
+                    this.hovering = true;
+                });
+
+                this.canvas.addEventListener('mouseleave', () => {
+                    this.hovering = false;
+                    this.targetMouse.x = 0.5;
+                    this.targetMouse.y = 0.5;
+                });
+            }
+
+            animate = () => {
+                // Smooth mouse movement
+                this.mouse.x += (this.targetMouse.x - this.mouse.x) * 0.03;
+                this.mouse.y += (this.targetMouse.y - this.mouse.y) * 0.03;
+
+                // Update ripple time
+                this.rippleTime += 0.016;
+
+                // Clear canvas
+                this.gl.clearColor(0, 0, 0, 0);
+                this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+
+                // Enable blending for transparency
+                this.gl.enable(this.gl.BLEND);
+                this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
+
+                // Set uniforms
+                this.gl.uniform1i(this.uniforms.uTexture, 0);
+                this.gl.uniform2f(this.uniforms.uMouse, this.mouse.x, this.mouse.y);
+                this.gl.uniform1f(this.uniforms.uTime, this.rippleTime);
+                this.gl.uniform1f(this.uniforms.uHover, this.hovering ? 1.0 : 0.0);
+
+                // Draw
+                this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
+
+                requestAnimationFrame(this.animate);
+            }
+        }
+
+        // Initialize
+        window.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('canvas');
+            new WebGLTextEffect(canvas, 'EVA SÁNCHEZ');
+        });
+    </script>
+</body>
+</html>
